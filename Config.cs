@@ -5,7 +5,7 @@ namespace MonitorWindowsRestore;
 public class Config
 {
     public List<string> Programs { get; set; } = [];
-    public int PollingIntervalSeconds { get; set; } = 60;
+    public int DebounceDelayMs { get; set; } = 500;
     public int RestoreDelayMs { get; set; } = 1000;
     public int RequiredMonitorCount { get; set; } = 2;
 
