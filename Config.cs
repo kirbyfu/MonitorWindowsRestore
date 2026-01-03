@@ -7,6 +7,7 @@ public class Config
     public List<string> Programs { get; set; } = [];
     public int PollingIntervalSeconds { get; set; } = 60;
     public int RestoreDelayMs { get; set; } = 1000;
+    public int RequiredMonitorCount { get; set; } = 2;
 
     private static readonly string ConfigPath = Path.Combine(
         AppContext.BaseDirectory, "config.json");

@@ -37,10 +37,10 @@ public class WindowTracker
 
     public void TrackWindows()
     {
-        // Only track when both monitors are connected
-        if (Screen.AllScreens.Length < 2)
+        // Only track when required monitors are connected
+        if (Screen.AllScreens.Length < _config.RequiredMonitorCount)
         {
-            OnLog?.Invoke("Single monitor detected, skipping position tracking");
+            OnLog?.Invoke($"Only {Screen.AllScreens.Length}/{_config.RequiredMonitorCount} monitors, skipping tracking");
             return;
         }
 

@@ -46,10 +46,10 @@ public class MonitorWatcher
         int currentCount = Screen.AllScreens.Length;
         OnLog?.Invoke($"Monitor count: {_lastMonitorCount} -> {currentCount}");
 
-        // Only restore when going from fewer monitors to 2+ monitors
-        if (_lastMonitorCount < 2 && currentCount >= 2)
+        // Only restore when going from fewer monitors to required count
+        if (_lastMonitorCount < _config.RequiredMonitorCount && currentCount >= _config.RequiredMonitorCount)
         {
-            OnLog?.Invoke("Both monitors detected, triggering restore");
+            OnLog?.Invoke($"All {_config.RequiredMonitorCount} monitors detected, triggering restore");
             OnMonitorsRestored?.Invoke();
         }
 

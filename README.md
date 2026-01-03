@@ -42,7 +42,8 @@ Edit `config.json` in the application directory:
     "thunderbird.exe"
   ],
   "pollingIntervalSeconds": 60,
-  "restoreDelayMs": 1000
+  "restoreDelayMs": 1000,
+  "requiredMonitorCount": 2
 }
 ```
 
@@ -51,6 +52,7 @@ Edit `config.json` in the application directory:
 | `programs` | List of executable names to track (find in Task Manager > Details) |
 | `pollingIntervalSeconds` | How often to save positions (default: 60) |
 | `restoreDelayMs` | Delay after monitor reconnect before restoring (default: 1000) |
+| `requiredMonitorCount` | Number of monitors required to track/restore (default: 2) |
 
 ## How It Works
 
