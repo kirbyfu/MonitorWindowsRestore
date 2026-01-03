@@ -37,9 +37,10 @@ static class Program
         _watcher.OnMonitorsRestored += () => _restorer.RestoreAll();
 
         // Create system tray icon
+        var iconPath = Path.Combine(AppContext.BaseDirectory, "app.ico");
         _trayIcon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = File.Exists(iconPath) ? new Icon(iconPath) : SystemIcons.Application,
             Visible = true,
             Text = "Monitor Windows Restore",
             ContextMenuStrip = CreateContextMenu(config)
