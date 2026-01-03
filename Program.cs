@@ -26,9 +26,9 @@ static class Program
         var config = Config.Load();
         var state = WindowState.Load();
 
-        _tracker = new WindowTracker(config, state);
-        _restorer = new WindowRestorer(config, state);
         _watcher = new MonitorWatcher(config);
+        _tracker = new WindowTracker(config, state, _watcher);
+        _restorer = new WindowRestorer(config, state);
 
         // Wire up events
         _tracker.OnLog += Log;

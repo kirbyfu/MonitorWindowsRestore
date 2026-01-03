@@ -6,6 +6,7 @@ public class WindowTracker
 {
     private readonly Config _config;
     private readonly WindowState _state;
+    private readonly MonitorWatcher _monitorWatcher;
     private readonly HashSet<string> _processNames;
 
     private IntPtr _foregroundHook;
@@ -19,10 +20,11 @@ public class WindowTracker
 
     public event Action<string>? OnLog;
 
-    public WindowTracker(Config config, WindowState state)
+    public WindowTracker(Config config, WindowState state, MonitorWatcher monitorWatcher)
     {
         _config = config;
         _state = state;
+        _monitorWatcher = monitorWatcher;
         _processNames = new HashSet<string>(_config.Programs, StringComparer.OrdinalIgnoreCase);
     }
 
@@ -94,6 +96,9 @@ public class WindowTracker
     private void OnWindowEvent(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
         int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
     {
+        // Don't capture during display reconfiguration
+        if (_monitorWatcher.IsFrozen) return;
+
         // Only handle window-level events, not child objects
         if (idObject != NativeMethods.OBJID_WINDOW) return;
         if (hwnd == IntPtr.Zero) return;

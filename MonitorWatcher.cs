@@ -8,6 +8,11 @@ public class MonitorWatcher
     private readonly System.Timers.Timer _debounceTimer;
     private int _lastMonitorCount;
 
+    /// <summary>
+    /// When true, window captures should be frozen (display is reconfiguring)
+    /// </summary>
+    public bool IsFrozen { get; private set; }
+
     public event Action? OnMonitorsRestored;
     public event Action<string>? OnLog;
 
@@ -23,12 +28,20 @@ public class MonitorWatcher
 
     public void Start()
     {
+        SystemEvents.DisplaySettingsChanging += OnDisplaySettingsChanging;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         OnLog?.Invoke($"Monitor watcher started (currently {_lastMonitorCount} monitors)");
     }
 
+    private void OnDisplaySettingsChanging(object? sender, EventArgs e)
+    {
+        IsFrozen = true;
+        OnLog?.Invoke("Display settings changing - captures frozen");
+    }
+
     public void Stop()
     {
+        SystemEvents.DisplaySettingsChanging -= OnDisplaySettingsChanging;
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         _debounceTimer.Stop();
         OnLog?.Invoke("Monitor watcher stopped");
@@ -46,11 +59,18 @@ public class MonitorWatcher
         int currentCount = Screen.AllScreens.Length;
         OnLog?.Invoke($"Monitor count: {_lastMonitorCount} -> {currentCount}");
 
-        // Only restore when going from fewer monitors to required count
-        if (_lastMonitorCount < _config.RequiredMonitorCount && currentCount >= _config.RequiredMonitorCount)
+        if (currentCount >= _config.RequiredMonitorCount)
         {
+            // Required monitors are connected - restore windows and resume capture
             OnLog?.Invoke($"All {_config.RequiredMonitorCount} monitors detected, triggering restore");
             OnMonitorsRestored?.Invoke();
+            IsFrozen = false;
+            OnLog?.Invoke("Captures resumed");
+        }
+        else
+        {
+            // Still missing monitors - stay frozen
+            OnLog?.Invoke($"Only {currentCount}/{_config.RequiredMonitorCount} monitors, staying frozen");
         }
 
         _lastMonitorCount = currentCount;
