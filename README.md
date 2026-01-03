@@ -9,7 +9,7 @@ When you disconnect a monitor (or it turns off), Windows moves all windows to th
 ## The Solution
 
 This app:
-1. Periodically saves window positions (only when all monitors are connected)
+1. Captures window positions in real-time using Windows event hooks
 2. Detects when monitors are reconnected
 3. Automatically restores windows to their saved positions
 
@@ -41,7 +41,7 @@ Edit `config.json` in the application directory:
     "Obsidian.exe",
     "thunderbird.exe"
   ],
-  "pollingIntervalSeconds": 60,
+  "debounceDelayMs": 500,
   "restoreDelayMs": 1000,
   "requiredMonitorCount": 2
 }
@@ -50,17 +50,19 @@ Edit `config.json` in the application directory:
 | Setting | Description |
 |---------|-------------|
 | `programs` | List of executable names to track (find in Task Manager > Details) |
-| `pollingIntervalSeconds` | How often to save positions (default: 60) |
+| `debounceDelayMs` | Delay after window movement before saving position (default: 500) |
 | `restoreDelayMs` | Delay after monitor reconnect before restoring (default: 1000) |
 | `requiredMonitorCount` | Number of monitors required to track/restore (default: 2) |
 
 ## How It Works
 
+- Uses Windows event hooks (`SetWinEventHook`) to capture window movements immediately
+- Debounces rapid changes (e.g., during window dragging) before saving
 - Uses `SystemEvents.DisplaySettingsChanged` to detect monitor changes
-- Polls window positions at the configured interval
 - Skips minimized and unresponsive windows
 - Identifies windows by process name + window title hash (handles multiple windows per app)
-- Only tracks/restores when 2+ monitors are connected
+- Preserves Z-order (window stacking) when restoring
+- Only tracks/restores when required monitors are connected
 
 ## Requirements
 

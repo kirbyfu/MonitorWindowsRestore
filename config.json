@@ -1,5 +1,5 @@
 {
   "programs": ["chrome.exe", "zen.exe", "Obsidian.exe", "thunderbird.exe"],
-  "pollingIntervalSeconds": 30,
+  "debounceDelayMs": 500,
   "restoreDelayMs": 1000
 }
