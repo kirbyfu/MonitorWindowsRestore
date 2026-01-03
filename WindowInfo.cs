@@ -12,6 +12,7 @@ public class WindowInfo
     public int Width { get; set; }
     public int Height { get; set; }
     public bool IsMaximized { get; set; }
+    public int ZOrder { get; set; }
 
     public static string GenerateId(string processName, string windowTitle)
     {

@@ -45,6 +45,7 @@ public class WindowTracker
         }
 
         var foundWindows = new HashSet<string>();
+        int zOrderCounter = 0;
 
         NativeMethods.EnumWindows((hWnd, _) =>
         {
@@ -87,7 +88,8 @@ public class WindowTracker
                     Y = rect.Top,
                     Width = rect.Right - rect.Left,
                     Height = rect.Bottom - rect.Top,
-                    IsMaximized = isMaximized
+                    IsMaximized = isMaximized,
+                    ZOrder = zOrderCounter++
                 };
 
                 _state.Windows[id] = info;

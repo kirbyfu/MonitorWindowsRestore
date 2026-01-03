@@ -24,7 +24,8 @@ public class WindowRestorer
         var toRemove = new List<string>();
         var windowHandles = GetCurrentWindowHandles();
 
-        foreach (var (id, info) in _state.Windows)
+        // Restore in reverse Z-order (bottom windows first) so topmost ends up on top
+        foreach (var (id, info) in _state.Windows.OrderByDescending(w => w.Value.ZOrder))
         {
             if (!windowHandles.TryGetValue(id, out var hWnd))
             {
@@ -72,16 +73,16 @@ public class WindowRestorer
             {
                 // For maximized windows, first move to correct position, then maximize
                 NativeMethods.ShowWindow(hWnd, NativeMethods.SW_RESTORE);
-                NativeMethods.SetWindowPos(hWnd, IntPtr.Zero,
+                NativeMethods.SetWindowPos(hWnd, NativeMethods.HWND_TOP,
                     info.X, info.Y, info.Width, info.Height,
-                    NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+                    NativeMethods.SWP_NOACTIVATE);
                 NativeMethods.ShowWindow(hWnd, NativeMethods.SW_MAXIMIZE);
             }
             else
             {
-                NativeMethods.SetWindowPos(hWnd, IntPtr.Zero,
+                NativeMethods.SetWindowPos(hWnd, NativeMethods.HWND_TOP,
                     info.X, info.Y, info.Width, info.Height,
-                    NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+                    NativeMethods.SWP_NOACTIVATE);
             }
 
             OnLog?.Invoke($"Restored: {info.WindowTitle} to ({info.X}, {info.Y})");
