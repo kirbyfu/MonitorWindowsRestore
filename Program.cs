@@ -34,7 +34,17 @@ static class Program
         _tracker.OnLog += Log;
         _restorer.OnLog += Log;
         _watcher.OnLog += Log;
-        _watcher.OnMonitorsRestored += () => _restorer.RestoreAll();
+        _watcher.OnMonitorsRestored += () =>
+        {
+            try
+            {
+                _restorer.RestoreAll();
+            }
+            catch (Exception ex)
+            {
+                Log($"Error during auto-restore: {ex.Message}");
+            }
+        };
 
         // Create system tray icon
         var iconPath = Path.Combine(AppContext.BaseDirectory, "app.ico");
@@ -79,8 +89,16 @@ static class Program
         var restoreNowItem = new ToolStripMenuItem("Restore Windows Now");
         restoreNowItem.Click += (_, _) =>
         {
-            _restorer?.RestoreAll();
-            ShowBalloon("Restored window positions");
+            try
+            {
+                _restorer?.RestoreAll();
+                ShowBalloon("Restored window positions");
+            }
+            catch (Exception ex)
+            {
+                Log($"Error during restore: {ex.Message}");
+                ShowBalloon($"Restore failed: {ex.Message}");
+            }
         };
         menu.Items.Add(restoreNowItem);
 

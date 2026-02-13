@@ -19,13 +19,25 @@ public class WindowRestorer
 
     public void RestoreAll()
     {
-        OnLog?.Invoke($"Restoring {_state.Windows.Count} windows...");
+        // Take a snapshot to avoid collection modified during enumeration
+        // (WindowTracker may update _state.Windows on background threads)
+        var windowsSnapshot = _state.Windows.ToList();
+
+        OnLog?.Invoke($"Restoring {windowsSnapshot.Count} windows...");
 
         var toRemove = new List<string>();
         var windowHandles = GetCurrentWindowHandles();
 
+        // Remove any corrupt entries with null values (can occur from malformed state file)
+        var nullEntries = windowsSnapshot.Where(w => w.Value == null).Select(w => w.Key).ToList();
+        foreach (var id in nullEntries)
+        {
+            OnLog?.Invoke($"Removing corrupt entry: {id}");
+            toRemove.Add(id);
+        }
+
         // Restore in reverse Z-order (bottom windows first) so topmost ends up on top
-        foreach (var (id, info) in _state.Windows.OrderByDescending(w => w.Value.ZOrder))
+        foreach (var (id, info) in windowsSnapshot.Where(w => w.Value != null).OrderByDescending(w => w.Value!.ZOrder))
         {
             if (!windowHandles.TryGetValue(id, out var hWnd))
             {

@@ -318,11 +318,13 @@ public class WindowTracker
             return true;
         }, IntPtr.Zero);
 
-        // Remove windows that no longer exist
+        // Remove windows that no longer exist (or have null values from corrupt state)
         var toRemove = _state.Windows.Keys.Except(foundWindows).ToList();
         foreach (var id in toRemove)
         {
-            OnLog?.Invoke($"Removing closed window: {_state.Windows[id].WindowTitle}");
+            var windowInfo = _state.Windows[id];
+            var title = windowInfo?.WindowTitle ?? id;
+            OnLog?.Invoke($"Removing closed window: {title}");
             _state.Windows.Remove(id);
         }
 

@@ -26,6 +26,9 @@ public class WindowState
     public Dictionary<string, WindowInfo> Windows { get; set; } = [];
     public DateTime LastUpdated { get; set; } = DateTime.Now;
 
+    [System.Text.Json.Serialization.JsonIgnore]
+    private readonly object _lock = new();
+
     private static readonly string StatePath = Path.Combine(
         AppContext.BaseDirectory, "window-state.json");
 
@@ -52,14 +55,26 @@ public class WindowState
 
     public void Save()
     {
-        LastUpdated = DateTime.Now;
-        var json = JsonSerializer.Serialize(this, JsonOptions);
-        File.WriteAllText(StatePath, json);
+        lock (_lock)
+        {
+            LastUpdated = DateTime.Now;
+            // Take a snapshot of the dictionary for serialization to avoid concurrent modification
+            var snapshot = new WindowState
+            {
+                Windows = new Dictionary<string, WindowInfo>(Windows),
+                LastUpdated = LastUpdated
+            };
+            var json = JsonSerializer.Serialize(snapshot, JsonOptions);
+            File.WriteAllText(StatePath, json);
+        }
     }
 
     public void RemoveWindow(string id)
     {
-        Windows.Remove(id);
+        lock (_lock)
+        {
+            Windows.Remove(id);
+        }
         Save();
     }
 }
