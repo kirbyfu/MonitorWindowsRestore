@@ -57,6 +57,18 @@ public static class NativeMethods
     [DllImport("user32.dll")]
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool QueryFullProcessImageName(
+        IntPtr hProcess, uint dwFlags, StringBuilder lpExeName, ref uint lpdwSize);
+
+    public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+
     [DllImport("user32.dll")]
     public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
 
@@ -84,6 +96,12 @@ public static class NativeMethods
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOACTIVATE = 0x0010;
     public const uint SWP_SHOWWINDOW = 0x0040;
+
+    /// <summary>
+    /// Queues the request to the owning thread instead of blocking until it responds.
+    /// Only safe when the call does not need to be ordered against other window calls.
+    /// </summary>
+    public const uint SWP_ASYNCWINDOWPOS = 0x4000;
 
     public static string GetWindowTitle(IntPtr hWnd)
     {

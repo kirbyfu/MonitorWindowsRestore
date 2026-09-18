@@ -89,16 +89,27 @@ static class Program
         var restoreNowItem = new ToolStripMenuItem("Restore Windows Now");
         restoreNowItem.Click += (_, _) =>
         {
-            try
+            // Restoring drives other processes' windows and can block on a slow one, so
+            // keep it off the UI thread - a stalled message pump here would make this app
+            // the thing that hangs anything sending it a message.
+            var ui = SynchronizationContext.Current;
+
+            Task.Run(() =>
             {
-                _restorer?.RestoreAll();
-                ShowBalloon("Restored window positions");
-            }
-            catch (Exception ex)
-            {
-                Log($"Error during restore: {ex.Message}");
-                ShowBalloon($"Restore failed: {ex.Message}");
-            }
+                string result;
+                try
+                {
+                    _restorer?.RestoreAll();
+                    result = "Restored window positions";
+                }
+                catch (Exception ex)
+                {
+                    Log($"Error during restore: {ex.Message}");
+                    result = $"Restore failed: {ex.Message}";
+                }
+
+                ui?.Post(_ => ShowBalloon(result), null);
+            });
         };
         menu.Items.Add(restoreNowItem);
 

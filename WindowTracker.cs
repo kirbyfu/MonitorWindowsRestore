@@ -1,5 +1,3 @@
-using System.Diagnostics;
-
 namespace MonitorWindowsRestore;
 
 public class WindowTracker
@@ -106,20 +104,9 @@ public class WindowTracker
         // Check if this is an app window we care about
         if (!NativeMethods.IsAppWindow(hwnd)) return;
 
-        // Get process info
-        NativeMethods.GetWindowThreadProcessId(hwnd, out uint processId);
-        string? processName = null;
-
-        try
-        {
-            var process = Process.GetProcessById((int)processId);
-            processName = process.ProcessName + ".exe";
-        }
-        catch (ArgumentException) { return; }
-        catch (InvalidOperationException) { return; }
-
         // Only track configured programs
-        if (!_processNames.Contains(processName)) return;
+        var processName = ProcessNames.ForWindow(hwnd);
+        if (processName == null || !_processNames.Contains(processName)) return;
 
         // Only track when required monitors are connected
         if (Screen.AllScreens.Length < _config.RequiredMonitorCount) return;
@@ -189,16 +176,8 @@ public class WindowTracker
         // Skip hung windows
         if (NativeMethods.IsHungAppWindow(hwnd)) return;
 
-        // Get window info
-        NativeMethods.GetWindowThreadProcessId(hwnd, out uint processId);
-        string? processName = null;
-
-        try
-        {
-            var process = Process.GetProcessById((int)processId);
-            processName = process.ProcessName + ".exe";
-        }
-        catch { return; }
+        var processName = ProcessNames.ForWindow(hwnd);
+        if (processName == null) return;
 
         var title = NativeMethods.GetWindowTitle(hwnd);
         if (string.IsNullOrEmpty(title)) return;
@@ -263,57 +242,42 @@ public class WindowTracker
         {
             if (!NativeMethods.IsAppWindow(hWnd)) return true;
 
-            NativeMethods.GetWindowThreadProcessId(hWnd, out uint processId);
+            var processName = ProcessNames.ForWindow(hWnd);
+            if (processName == null || !_processNames.Contains(processName)) return true;
 
-            try
+            // Skip hung/unresponsive windows
+            if (NativeMethods.IsHungAppWindow(hWnd))
             {
-                var process = Process.GetProcessById((int)processId);
-                var processName = process.ProcessName + ".exe";
-
-                if (!_processNames.Contains(processName)) return true;
-
-                // Skip hung/unresponsive windows
-                if (NativeMethods.IsHungAppWindow(hWnd))
-                {
-                    OnLog?.Invoke($"Skipping unresponsive window: {processName}");
-                    return true;
-                }
-
-                var title = NativeMethods.GetWindowTitle(hWnd);
-                if (string.IsNullOrEmpty(title)) return true;
-
-                var id = WindowInfo.GenerateId(processName, title);
-                foundWindows.Add(id);
-
-                // Skip minimized windows - keep existing position if we have one
-                if (NativeMethods.IsIconic(hWnd)) return true;
-
-                NativeMethods.GetWindowRect(hWnd, out var rect);
-                bool isMaximized = NativeMethods.IsZoomed(hWnd);
-
-                var info = new WindowInfo
-                {
-                    ProcessName = processName,
-                    WindowTitle = title,
-                    Id = id,
-                    X = rect.Left,
-                    Y = rect.Top,
-                    Width = rect.Right - rect.Left,
-                    Height = rect.Bottom - rect.Top,
-                    IsMaximized = isMaximized,
-                    ZOrder = zOrderCounter++
-                };
-
-                _state.Windows[id] = info;
+                OnLog?.Invoke($"Skipping unresponsive window: {processName}");
+                return true;
             }
-            catch (ArgumentException)
+
+            var title = NativeMethods.GetWindowTitle(hWnd);
+            if (string.IsNullOrEmpty(title)) return true;
+
+            var id = WindowInfo.GenerateId(processName, title);
+            foundWindows.Add(id);
+
+            // Skip minimized windows - keep existing position if we have one
+            if (NativeMethods.IsIconic(hWnd)) return true;
+
+            NativeMethods.GetWindowRect(hWnd, out var rect);
+            bool isMaximized = NativeMethods.IsZoomed(hWnd);
+
+            var info = new WindowInfo
             {
-                // Process no longer exists
-            }
-            catch (InvalidOperationException)
-            {
-                // Process has exited
-            }
+                ProcessName = processName,
+                WindowTitle = title,
+                Id = id,
+                X = rect.Left,
+                Y = rect.Top,
+                Width = rect.Right - rect.Left,
+                Height = rect.Bottom - rect.Top,
+                IsMaximized = isMaximized,
+                ZOrder = zOrderCounter++
+            };
+
+            _state.Windows[id] = info;
 
             return true;
         }, IntPtr.Zero);
