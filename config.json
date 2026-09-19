@@ -1,5 +1,6 @@
 {
   "programs": ["chrome.exe", "zen.exe", "Obsidian.exe", "thunderbird.exe"],
   "debounceDelayMs": 500,
-  "restoreDelayMs": 1000
+  "restoreDelayMs": 1000,
+  "requiredMonitorCount": 2
 }

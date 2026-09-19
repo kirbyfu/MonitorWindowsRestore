@@ -6,9 +6,6 @@ public class WindowRestorer
     private readonly WindowState _state;
     private readonly HashSet<string> _processNames;
 
-    /// <summary>How long to wait on a window that has to be driven with blocking calls.</summary>
-    private const int SequenceTimeoutMs = 2000;
-
     public event Action<string>? OnLog;
 
     public WindowRestorer(Config config, WindowState state)
@@ -18,128 +15,123 @@ public class WindowRestorer
         _processNames = new HashSet<string>(_config.Programs, StringComparer.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Puts every saved window back. Never prunes: a window we can't find right now may be
+    /// a browser still starting up after resume, and its position is worth keeping.
+    /// </summary>
     public void RestoreAll()
     {
-        // Take a snapshot to avoid collection modified during enumeration
-        // (WindowTracker may update _state.Windows on background threads)
-        var windowsSnapshot = _state.Windows.ToList();
+        var snapshot = _state.Snapshot();
+        OnLog?.Invoke($"Restoring {snapshot.Count} windows...");
 
-        OnLog?.Invoke($"Restoring {windowsSnapshot.Count} windows...");
+        var current = GetCurrentWindows();
+        var claimed = new HashSet<IntPtr>();
+        bool rekeyed = false;
+        int restored = 0;
 
-        var toRemove = new List<string>();
-        var windowHandles = GetCurrentWindowHandles();
-
-        // Remove any corrupt entries with null values (can occur from malformed state file)
-        var nullEntries = windowsSnapshot.Where(w => w.Value == null).Select(w => w.Key).ToList();
-        foreach (var id in nullEntries)
+        foreach (var (savedHandle, info) in snapshot)
         {
-            OnLog?.Invoke($"Removing corrupt entry: {id}");
-            toRemove.Add(id);
-        }
-
-        // Restore in reverse Z-order (bottom windows first) so topmost ends up on top
-        foreach (var (id, info) in windowsSnapshot.Where(w => w.Value != null).OrderByDescending(w => w.Value!.ZOrder))
-        {
-            if (!windowHandles.TryGetValue(id, out var hWnd))
+            var hWnd = ResolveHandle(savedHandle, info, current, claimed);
+            if (hWnd == IntPtr.Zero)
             {
-                OnLog?.Invoke($"Window no longer exists: {info.WindowTitle}");
-                toRemove.Add(id);
+                OnLog?.Invoke($"Not found (keeping): {info.WindowTitle}");
                 continue;
             }
 
-            // Skip unresponsive windows
-            if (NativeMethods.IsHungAppWindow(hWnd))
+            claimed.Add(hWnd);
+            if (hWnd.ToInt64() != savedHandle)
             {
-                OnLog?.Invoke($"Skipping unresponsive window: {info.WindowTitle}");
-                toRemove.Add(id);
-                continue;
+                _state.Move(savedHandle, hWnd);
+                rekeyed = true;
             }
 
-            RestoreWindow(hWnd, info);
+            if (RestoreWindow(hWnd, info)) restored++;
         }
 
-        // Clean up removed windows
-        foreach (var id in toRemove)
+        if (rekeyed)
         {
-            _state.Windows.Remove(id);
+            try { _state.Save(); }
+            catch (Exception ex) { OnLog?.Invoke($"Failed to save state: {ex.Message}"); }
         }
 
-        if (toRemove.Count > 0)
-        {
-            _state.Save();
-        }
-
-        OnLog?.Invoke("Restore complete");
-    }
-
-    private void RestoreWindow(IntPtr hWnd, WindowInfo info)
-    {
-        try
-        {
-            // The simple case is a single call with nothing to order it against, so it can
-            // be queued to the owning thread. A window that has stopped pumping messages
-            // then can't block us at all.
-            if (!info.IsMaximized && !NativeMethods.IsIconic(hWnd))
-            {
-                NativeMethods.SetWindowPos(hWnd, NativeMethods.HWND_TOP,
-                    info.X, info.Y, info.Width, info.Height,
-                    NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_ASYNCWINDOWPOS);
-
-                OnLog?.Invoke($"Restored: {info.WindowTitle} to ({info.X}, {info.Y})");
-                return;
-            }
-
-            // Un-minimizing and maximizing need an ordered sequence, which means
-            // synchronous calls that block until the owning thread responds. Cap the wait
-            // so one unresponsive window can't stall the rest of the restore - or freeze
-            // the tray app, when this runs off the "Restore Windows Now" menu item.
-            var sequence = Task.Run(() => RestoreSequence(hWnd, info));
-
-            if (!sequence.Wait(SequenceTimeoutMs))
-            {
-                OnLog?.Invoke($"Timed out restoring (window not responding): {info.WindowTitle}");
-                return;
-            }
-
-            OnLog?.Invoke($"Restored: {info.WindowTitle} to ({info.X}, {info.Y})");
-        }
-        catch (Exception ex)
-        {
-            OnLog?.Invoke($"Failed to restore {info.WindowTitle}: {ex.Message}");
-        }
+        OnLog?.Invoke($"Restore complete ({restored}/{snapshot.Count})");
     }
 
     /// <summary>
-    /// Blocks until the owning thread has processed each step, so the steps land in order.
-    /// Always call this through the timeout in <see cref="RestoreWindow"/>.
+    /// The saved handle is authoritative while the window it named is still alive - titles
+    /// change constantly, handles don't. After a reboot the handles are meaningless, so fall
+    /// back to matching process + title against an unclaimed live window.
     /// </summary>
-    private static void RestoreSequence(IntPtr hWnd, WindowInfo info)
+    private static IntPtr ResolveHandle(long savedHandle, WindowInfo info,
+        List<(IntPtr Handle, string ProcessName, string Title)> current, HashSet<IntPtr> claimed)
     {
-        if (NativeMethods.IsIconic(hWnd))
+        var hWnd = new IntPtr(savedHandle);
+        if (NativeMethods.IsWindow(hWnd) && !claimed.Contains(hWnd))
         {
-            NativeMethods.ShowWindow(hWnd, NativeMethods.SW_RESTORE);
+            var owner = ProcessNames.ForWindow(hWnd);
+            if (string.Equals(owner, info.ProcessName, StringComparison.OrdinalIgnoreCase))
+                return hWnd;
         }
 
-        if (info.IsMaximized)
+        foreach (var w in current)
         {
-            // For maximized windows, first move to correct position, then maximize
-            NativeMethods.ShowWindow(hWnd, NativeMethods.SW_RESTORE);
-            NativeMethods.SetWindowPos(hWnd, NativeMethods.HWND_TOP,
-                info.X, info.Y, info.Width, info.Height,
-                NativeMethods.SWP_NOACTIVATE);
-            NativeMethods.ShowWindow(hWnd, NativeMethods.SW_MAXIMIZE);
+            if (claimed.Contains(w.Handle)) continue;
+            if (!string.Equals(w.ProcessName, info.ProcessName, StringComparison.OrdinalIgnoreCase)) continue;
+            if (w.Title != info.WindowTitle) continue;
+            return w.Handle;
+        }
+
+        return IntPtr.Zero;
+    }
+
+    private bool RestoreWindow(IntPtr hWnd, WindowInfo info)
+    {
+        // One SetWindowPlacement call carries the normal rect and the show state together, so
+        // a maximized window re-maximizes on the monitor containing the saved rect without the
+        // un-maximize / move / re-maximize dance, and a minimized window gets its restore
+        // position fixed without being popped open. The async flag posts the request to the
+        // owning thread, so a hung window can't block us.
+        bool minimized = NativeMethods.IsIconic(hWnd);
+
+        var placement = NativeMethods.WINDOWPLACEMENT.Create();
+        placement.flags = NativeMethods.WPF_ASYNCWINDOWPLACEMENT;
+        placement.rcNormalPosition = new NativeMethods.RECT
+        {
+            Left = info.X,
+            Top = info.Y,
+            Right = info.X + info.Width,
+            Bottom = info.Y + info.Height
+        };
+
+        if (minimized)
+        {
+            placement.showCmd = NativeMethods.SW_SHOWMINNOACTIVE;
+            if (info.IsMaximized) placement.flags |= NativeMethods.WPF_RESTORETOMAXIMIZED;
+        }
+        else if (info.IsMaximized)
+        {
+            // No non-activating variant exists for maximize, so this one does take focus
+            placement.showCmd = NativeMethods.SW_SHOWMAXIMIZED;
         }
         else
         {
-            NativeMethods.SetWindowPos(hWnd, NativeMethods.HWND_TOP,
-                info.X, info.Y, info.Width, info.Height,
-                NativeMethods.SWP_NOACTIVATE);
+            placement.showCmd = NativeMethods.SW_SHOWNOACTIVATE;
         }
+
+        if (!NativeMethods.SetWindowPlacement(hWnd, ref placement))
+        {
+            OnLog?.Invoke($"Failed to restore {info.WindowTitle} (error {System.Runtime.InteropServices.Marshal.GetLastWin32Error()})");
+            return false;
+        }
+
+        var state = minimized ? "minimized" : info.IsMaximized ? "maximized" : "normal";
+        OnLog?.Invoke($"Restored: {info.WindowTitle} to ({info.X}, {info.Y}) {state}");
+        return true;
     }
 
-    private Dictionary<string, IntPtr> GetCurrentWindowHandles()
+    private List<(IntPtr Handle, string ProcessName, string Title)> GetCurrentWindows()
     {
-        var handles = new Dictionary<string, IntPtr>();
+        var windows = new List<(IntPtr, string, string)>();
 
         NativeMethods.EnumWindows((hWnd, _) =>
         {
@@ -151,12 +143,10 @@ public class WindowRestorer
             var title = NativeMethods.GetWindowTitle(hWnd);
             if (string.IsNullOrEmpty(title)) return true;
 
-            var id = WindowInfo.GenerateId(processName, title);
-            handles[id] = hWnd;
-
+            windows.Add((hWnd, processName, title));
             return true;
         }, IntPtr.Zero);
 
-        return handles;
+        return windows;
     }
 }

@@ -7,12 +7,13 @@ public class WindowTracker
     private readonly MonitorWatcher _monitorWatcher;
     private readonly HashSet<string> _processNames;
 
-    private IntPtr _foregroundHook;
     private IntPtr _locationHook;
+    private IntPtr _showHook;
+    private IntPtr _nameChangeHook;
+    private IntPtr _destroyHook;
     private NativeMethods.WinEventDelegate? _winEventDelegate;
     private readonly Dictionary<IntPtr, System.Timers.Timer> _pendingCaptures = new();
     private readonly object _lock = new();
-    private int _zOrderCounter;
     private System.Timers.Timer? _saveTimer;
     private bool _savePending;
 
@@ -31,27 +32,24 @@ public class WindowTracker
         // Initial scan to populate state
         TrackWindows();
 
+        // Anything already debouncing when the display changes would capture the shoved
+        // position once its timer fires, so throw those away.
+        _monitorWatcher.OnFreeze += CancelPendingCaptures;
+
         // Keep delegate alive to prevent GC
         _winEventDelegate = OnWindowEvent;
 
-        // Install hooks for foreground (focus) and location changes
-        _foregroundHook = NativeMethods.SetWinEventHook(
-            NativeMethods.EVENT_SYSTEM_FOREGROUND,
-            NativeMethods.EVENT_SYSTEM_FOREGROUND,
-            IntPtr.Zero,
-            _winEventDelegate,
-            0, 0,
-            NativeMethods.WINEVENT_OUTOFCONTEXT);
+        // Location changes cover moves, resizes, maximize and minimize. A new window is
+        // typically titled and positioned while still hidden, so those events are filtered
+        // out and it's the show event that first sees it. Name changes keep the saved title
+        // fresh, which is what post-reboot matching relies on.
+        _locationHook = Hook(NativeMethods.EVENT_OBJECT_LOCATIONCHANGE);
+        _showHook = Hook(NativeMethods.EVENT_OBJECT_SHOW);
+        _nameChangeHook = Hook(NativeMethods.EVENT_OBJECT_NAMECHANGE);
+        _destroyHook = Hook(NativeMethods.EVENT_OBJECT_DESTROY);
 
-        _locationHook = NativeMethods.SetWinEventHook(
-            NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
-            NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
-            IntPtr.Zero,
-            _winEventDelegate,
-            0, 0,
-            NativeMethods.WINEVENT_OUTOFCONTEXT);
-
-        if (_foregroundHook == IntPtr.Zero || _locationHook == IntPtr.Zero)
+        if (_locationHook == IntPtr.Zero || _showHook == IntPtr.Zero
+            || _nameChangeHook == IntPtr.Zero || _destroyHook == IntPtr.Zero)
         {
             OnLog?.Invoke("Warning: Failed to install one or more event hooks");
         }
@@ -59,21 +57,110 @@ public class WindowTracker
         OnLog?.Invoke("Window tracking started (event hooks)");
     }
 
+    private IntPtr Hook(uint eventType) => NativeMethods.SetWinEventHook(
+        eventType, eventType, IntPtr.Zero, _winEventDelegate!, 0, 0, NativeMethods.WINEVENT_OUTOFCONTEXT);
+
+    private static void Unhook(ref IntPtr hook)
+    {
+        if (hook == IntPtr.Zero) return;
+        NativeMethods.UnhookWinEvent(hook);
+        hook = IntPtr.Zero;
+    }
+
     public void Stop()
     {
-        if (_foregroundHook != IntPtr.Zero)
+        _monitorWatcher.OnFreeze -= CancelPendingCaptures;
+
+        Unhook(ref _locationHook);
+        Unhook(ref _showHook);
+        Unhook(ref _nameChangeHook);
+        Unhook(ref _destroyHook);
+
+        CancelPendingCaptures();
+
+        lock (_lock)
         {
-            NativeMethods.UnhookWinEvent(_foregroundHook);
-            _foregroundHook = IntPtr.Zero;
+            _saveTimer?.Stop();
+            _saveTimer?.Dispose();
+            _saveTimer = null;
         }
 
-        if (_locationHook != IntPtr.Zero)
+        OnLog?.Invoke("Window tracking stopped");
+    }
+
+    private bool MonitorsPresent() => NativeMethods.MonitorCount() >= _config.RequiredMonitorCount;
+
+    private void OnWindowEvent(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+    {
+        // Only handle window-level events, not child objects (the cursor fires this constantly)
+        if (idObject != NativeMethods.OBJID_WINDOW) return;
+        if (hwnd == IntPtr.Zero) return;
+
+        // Child HWNDs raise these too (taskbar bands, browser render widgets). EnumWindows
+        // only ever hands out top-level windows, so match that here.
+        if (NativeMethods.GetAncestor(hwnd, NativeMethods.GA_ROOT) != hwnd) return;
+
+        if (eventType == NativeMethods.EVENT_OBJECT_DESTROY)
         {
-            NativeMethods.UnhookWinEvent(_locationHook);
-            _locationHook = IntPtr.Zero;
+            OnWindowDestroyed(hwnd);
+            return;
         }
 
-        // Dispose all pending capture timers
+        // Don't capture during display reconfiguration
+        if (_monitorWatcher.IsFrozen) return;
+
+        if (!NativeMethods.IsAppWindow(hwnd)) return;
+
+        var processName = ProcessNames.ForWindow(hwnd);
+        if (processName == null || !_processNames.Contains(processName)) return;
+
+        if (!MonitorsPresent()) return;
+
+        StartDebounceTimer(hwnd);
+    }
+
+    private void OnWindowDestroyed(IntPtr hwnd)
+    {
+        // Every destroyed HWND on the system lands here, so keep this to a lookup. Only
+        // windows we've saved matter.
+        if (!_state.Contains(hwnd)) return;
+
+        lock (_lock)
+        {
+            if (_pendingCaptures.Remove(hwnd, out var timer))
+            {
+                timer.Stop();
+                timer.Dispose();
+            }
+        }
+
+        // A window that closes while the display is reconfiguring is still gone, but the
+        // shove itself never destroys windows, so this is safe to do while frozen.
+        _state.Remove(hwnd.ToInt64());
+        ScheduleSave();
+    }
+
+    private void StartDebounceTimer(IntPtr hwnd)
+    {
+        lock (_lock)
+        {
+            if (_pendingCaptures.TryGetValue(hwnd, out var existingTimer))
+            {
+                existingTimer.Stop();
+                existingTimer.Start();
+                return;
+            }
+
+            var timer = new System.Timers.Timer(_config.DebounceDelayMs) { AutoReset = false };
+            timer.Elapsed += (_, _) => CaptureWindow(hwnd);
+            _pendingCaptures[hwnd] = timer;
+            timer.Start();
+        }
+    }
+
+    private void CancelPendingCaptures()
+    {
         lock (_lock)
         {
             foreach (var timer in _pendingCaptures.Values)
@@ -83,98 +170,18 @@ public class WindowTracker
             }
             _pendingCaptures.Clear();
         }
-
-        _saveTimer?.Stop();
-        _saveTimer?.Dispose();
-        _saveTimer = null;
-
-        OnLog?.Invoke("Window tracking stopped");
     }
 
-    private void OnWindowEvent(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
-        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
-    {
-        // Don't capture during display reconfiguration
-        if (_monitorWatcher.IsFrozen) return;
-
-        // Only handle window-level events, not child objects
-        if (idObject != NativeMethods.OBJID_WINDOW) return;
-        if (hwnd == IntPtr.Zero) return;
-
-        // Check if this is an app window we care about
-        if (!NativeMethods.IsAppWindow(hwnd)) return;
-
-        // Only track configured programs
-        var processName = ProcessNames.ForWindow(hwnd);
-        if (processName == null || !_processNames.Contains(processName)) return;
-
-        // Only track when required monitors are connected
-        if (Screen.AllScreens.Length < _config.RequiredMonitorCount) return;
-
-        // Update Z-order on focus change
-        if (eventType == NativeMethods.EVENT_SYSTEM_FOREGROUND)
-        {
-            Interlocked.Increment(ref _zOrderCounter);
-        }
-
-        // Start or reset debounce timer for this window
-        StartDebounceTimer(hwnd, eventType == NativeMethods.EVENT_SYSTEM_FOREGROUND);
-    }
-
-    private void StartDebounceTimer(IntPtr hwnd, bool isFocusChange)
+    private void CaptureWindow(IntPtr hwnd)
     {
         lock (_lock)
         {
-            if (_pendingCaptures.TryGetValue(hwnd, out var existingTimer))
-            {
-                // Reset existing timer
-                existingTimer.Stop();
-                existingTimer.Start();
-            }
-            else
-            {
-                // Create new timer
-                var timer = new System.Timers.Timer(_config.DebounceDelayMs);
-                timer.AutoReset = false;
-                var capturedHwnd = hwnd;
-                var capturedZOrder = _zOrderCounter;
-                timer.Elapsed += (_, _) => CaptureWindow(capturedHwnd, capturedZOrder);
-                _pendingCaptures[hwnd] = timer;
-                timer.Start();
-            }
-
-            // Update the captured Z-order if this is a focus change
-            if (isFocusChange && _pendingCaptures.TryGetValue(hwnd, out var t))
-            {
-                // Re-create timer to capture updated Z-order
-                t.Stop();
-                t.Dispose();
-                var timer = new System.Timers.Timer(_config.DebounceDelayMs);
-                timer.AutoReset = false;
-                var capturedHwnd = hwnd;
-                var capturedZOrder = _zOrderCounter;
-                timer.Elapsed += (_, _) => CaptureWindow(capturedHwnd, capturedZOrder);
-                _pendingCaptures[hwnd] = timer;
-                timer.Start();
-            }
-        }
-    }
-
-    private void CaptureWindow(IntPtr hwnd, int zOrder)
-    {
-        lock (_lock)
-        {
-            _pendingCaptures.Remove(hwnd);
+            if (!_pendingCaptures.Remove(hwnd, out var timer)) return; // cancelled
+            timer.Dispose();
         }
 
-        // Check window still exists and get its rect
-        if (!NativeMethods.GetWindowRect(hwnd, out var rect)) return;
-
-        // Skip minimized windows - keep existing position
-        if (NativeMethods.IsIconic(hwnd)) return;
-
-        // Skip hung windows
-        if (NativeMethods.IsHungAppWindow(hwnd)) return;
+        // Re-check: the display may have changed since the event that started this timer
+        if (_monitorWatcher.IsFrozen || !MonitorsPresent()) return;
 
         var processName = ProcessNames.ForWindow(hwnd);
         if (processName == null) return;
@@ -182,23 +189,10 @@ public class WindowTracker
         var title = NativeMethods.GetWindowTitle(hwnd);
         if (string.IsNullOrEmpty(title)) return;
 
-        var id = WindowInfo.GenerateId(processName, title);
-        bool isMaximized = NativeMethods.IsZoomed(hwnd);
+        var info = WindowInfo.Capture(hwnd, processName, title);
+        if (info == null) return;
 
-        var info = new WindowInfo
-        {
-            ProcessName = processName,
-            WindowTitle = title,
-            Id = id,
-            X = rect.Left,
-            Y = rect.Top,
-            Width = rect.Right - rect.Left,
-            Height = rect.Bottom - rect.Top,
-            IsMaximized = isMaximized,
-            ZOrder = zOrder
-        };
-
-        _state.Windows[id] = info;
+        _state.Set(hwnd, info);
         ScheduleSave();
     }
 
@@ -211,32 +205,38 @@ public class WindowTracker
 
             _saveTimer?.Stop();
             _saveTimer?.Dispose();
-            _saveTimer = new System.Timers.Timer(100); // Batch saves within 100ms
-            _saveTimer.AutoReset = false;
+            _saveTimer = new System.Timers.Timer(100) { AutoReset = false }; // Batch saves within 100ms
             _saveTimer.Elapsed += (_, _) =>
             {
                 lock (_lock) { _savePending = false; }
-                _state.Save();
-                OnLog?.Invoke($"Saved {_state.Windows.Count} windows");
+                try
+                {
+                    _state.Save();
+                    OnLog?.Invoke($"Saved {_state.Count} windows");
+                }
+                catch (Exception ex)
+                {
+                    OnLog?.Invoke($"Failed to save state: {ex.Message}");
+                }
             };
             _saveTimer.Start();
         }
     }
 
     /// <summary>
-    /// Manual full scan - used for "Track Now" menu and initial population
+    /// Full scan - used for "Track Now" and initial population. This is the only place
+    /// entries are pruned wholesale: with the required monitors present, what's on screen
+    /// right now is authoritative.
     /// </summary>
     public void TrackWindows()
     {
-        // Only track when required monitors are connected
-        if (Screen.AllScreens.Length < _config.RequiredMonitorCount)
+        if (!MonitorsPresent())
         {
-            OnLog?.Invoke($"Only {Screen.AllScreens.Length}/{_config.RequiredMonitorCount} monitors, skipping tracking");
+            OnLog?.Invoke($"Only {NativeMethods.MonitorCount()}/{_config.RequiredMonitorCount} monitors, skipping tracking");
             return;
         }
 
-        var foundWindows = new HashSet<string>();
-        int zOrderCounter = 0;
+        var found = new HashSet<long>();
 
         NativeMethods.EnumWindows((hWnd, _) =>
         {
@@ -245,57 +245,25 @@ public class WindowTracker
             var processName = ProcessNames.ForWindow(hWnd);
             if (processName == null || !_processNames.Contains(processName)) return true;
 
-            // Skip hung/unresponsive windows
-            if (NativeMethods.IsHungAppWindow(hWnd))
-            {
-                OnLog?.Invoke($"Skipping unresponsive window: {processName}");
-                return true;
-            }
-
             var title = NativeMethods.GetWindowTitle(hWnd);
             if (string.IsNullOrEmpty(title)) return true;
 
-            var id = WindowInfo.GenerateId(processName, title);
-            foundWindows.Add(id);
+            var info = WindowInfo.Capture(hWnd, processName, title);
+            if (info == null) return true;
 
-            // Skip minimized windows - keep existing position if we have one
-            if (NativeMethods.IsIconic(hWnd)) return true;
-
-            NativeMethods.GetWindowRect(hWnd, out var rect);
-            bool isMaximized = NativeMethods.IsZoomed(hWnd);
-
-            var info = new WindowInfo
-            {
-                ProcessName = processName,
-                WindowTitle = title,
-                Id = id,
-                X = rect.Left,
-                Y = rect.Top,
-                Width = rect.Right - rect.Left,
-                Height = rect.Bottom - rect.Top,
-                IsMaximized = isMaximized,
-                ZOrder = zOrderCounter++
-            };
-
-            _state.Windows[id] = info;
-
+            found.Add(hWnd.ToInt64());
+            _state.Set(hWnd, info);
             return true;
         }, IntPtr.Zero);
 
-        // Remove windows that no longer exist (or have null values from corrupt state)
-        var toRemove = _state.Windows.Keys.Except(foundWindows).ToList();
-        foreach (var id in toRemove)
+        foreach (var (hWnd, info) in _state.Snapshot())
         {
-            var windowInfo = _state.Windows[id];
-            var title = windowInfo?.WindowTitle ?? id;
-            OnLog?.Invoke($"Removing closed window: {title}");
-            _state.Windows.Remove(id);
+            if (found.Contains(hWnd)) continue;
+            OnLog?.Invoke($"Removing closed window: {info.WindowTitle}");
+            _state.Remove(hWnd);
         }
 
-        // Update the Z-order counter to be above all enumerated windows
-        _zOrderCounter = zOrderCounter;
-
         _state.Save();
-        OnLog?.Invoke($"Tracked {_state.Windows.Count} windows");
+        OnLog?.Invoke($"Tracked {_state.Count} windows");
     }
 }

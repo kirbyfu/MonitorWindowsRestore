@@ -9,6 +9,9 @@ static class Program
     private static readonly List<string> _logs = [];
     private static readonly object _logLock = new();
 
+    private static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "log.txt");
+    private const long MaxLogBytes = 1024 * 1024;
+
     [STAThread]
     static void Main()
     {
@@ -23,7 +26,13 @@ static class Program
             return;
         }
 
-        var config = Config.Load();
+        var config = Config.Load(out var configError);
+        if (configError != null)
+        {
+            Log(configError);
+            MessageBox.Show(configError, "Config Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
         var state = WindowState.Load();
 
         _watcher = new MonitorWatcher(config);
@@ -42,7 +51,7 @@ static class Program
             }
             catch (Exception ex)
             {
-                Log($"Error during auto-restore: {ex.Message}");
+                Log($"Error during auto-restore: {ex}");
             }
         };
 
@@ -60,8 +69,8 @@ static class Program
         _tracker.Start();
         _watcher.Start();
 
-        Log($"Started - tracking {config.Programs.Count} programs");
-        Log($"Current monitors: {Screen.AllScreens.Length}");
+        Log($"Started - tracking {config.Programs.Count} programs, {NativeMethods.MonitorCount()} monitors, " +
+            $"{state.Count} saved windows");
 
         Application.Run();
     }
@@ -70,7 +79,7 @@ static class Program
     {
         var menu = new ContextMenuStrip();
 
-        var statusItem = new ToolStripMenuItem($"Monitors: {Screen.AllScreens.Length}")
+        var statusItem = new ToolStripMenuItem($"Monitors: {NativeMethods.MonitorCount()}")
         {
             Enabled = false
         };
@@ -89,27 +98,18 @@ static class Program
         var restoreNowItem = new ToolStripMenuItem("Restore Windows Now");
         restoreNowItem.Click += (_, _) =>
         {
-            // Restoring drives other processes' windows and can block on a slow one, so
-            // keep it off the UI thread - a stalled message pump here would make this app
-            // the thing that hangs anything sending it a message.
-            var ui = SynchronizationContext.Current;
-
-            Task.Run(() =>
+            // Placements are posted asynchronously to each window's owning thread, so this
+            // can't block on a hung window and is safe to run on the UI thread.
+            try
             {
-                string result;
-                try
-                {
-                    _restorer?.RestoreAll();
-                    result = "Restored window positions";
-                }
-                catch (Exception ex)
-                {
-                    Log($"Error during restore: {ex.Message}");
-                    result = $"Restore failed: {ex.Message}";
-                }
-
-                ui?.Post(_ => ShowBalloon(result), null);
-            });
+                _restorer?.RestoreAll();
+                ShowBalloon("Restored window positions");
+            }
+            catch (Exception ex)
+            {
+                Log($"Error during restore: {ex}");
+                ShowBalloon($"Restore failed: {ex.Message}");
+            }
         };
         menu.Items.Add(restoreNowItem);
 
@@ -150,7 +150,7 @@ static class Program
         // Update monitor count when menu opens
         menu.Opening += (_, _) =>
         {
-            statusItem.Text = $"Monitors: {Screen.AllScreens.Length}";
+            statusItem.Text = $"Monitors: {NativeMethods.MonitorCount()}";
         };
 
         return menu;
@@ -158,13 +158,27 @@ static class Program
 
     private static void Log(string message)
     {
-        var entry = $"[{DateTime.Now:HH:mm:ss}] {message}";
+        var entry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}";
         lock (_logLock)
         {
             _logs.Add(entry);
             if (_logs.Count > 100) _logs.RemoveAt(0);
+
+            // Failures happen while nobody is watching the tray, so keep a file too. Roll it
+            // over once, so it can't grow without bound.
+            try
+            {
+                if (File.Exists(LogPath) && new FileInfo(LogPath).Length > MaxLogBytes)
+                {
+                    File.Move(LogPath, Path.ChangeExtension(LogPath, ".old.txt"), overwrite: true);
+                }
+                File.AppendAllText(LogPath, entry + Environment.NewLine);
+            }
+            catch
+            {
+                // Logging must never take the app down
+            }
         }
-        Console.WriteLine(entry);
     }
 
     private static void ShowLogs()

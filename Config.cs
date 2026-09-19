@@ -15,11 +15,19 @@ public class Config
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        ReadCommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true
     };
 
-    public static Config Load()
+    /// <summary>
+    /// Loads config.json, writing defaults if it doesn't exist. A malformed file is reported
+    /// through <paramref name="error"/> and left untouched, and the defaults are used instead.
+    /// </summary>
+    public static Config Load(out string? error)
     {
+        error = null;
+
         if (!File.Exists(ConfigPath))
         {
             var defaultConfig = new Config
@@ -36,8 +44,16 @@ public class Config
             return defaultConfig;
         }
 
-        var json = File.ReadAllText(ConfigPath);
-        return JsonSerializer.Deserialize<Config>(json, JsonOptions) ?? new Config();
+        try
+        {
+            var json = File.ReadAllText(ConfigPath);
+            return JsonSerializer.Deserialize<Config>(json, JsonOptions) ?? new Config();
+        }
+        catch (Exception ex)
+        {
+            error = $"Could not read config.json, using defaults:\n{ex.Message}";
+            return new Config();
+        }
     }
 
     public void Save()

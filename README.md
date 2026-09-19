@@ -58,11 +58,16 @@ Edit `config.json` in the application directory:
 
 - Uses Windows event hooks (`SetWinEventHook`) to capture window movements immediately
 - Debounces rapid changes (e.g., during window dragging) before saving
-- Uses `SystemEvents.DisplaySettingsChanged` to detect monitor changes
-- Skips minimized and unresponsive windows
-- Identifies windows by process name + window title hash (handles multiple windows per app)
-- Preserves Z-order (window stacking) when restoring
+- Captures with `GetWindowPlacement`, so a maximized window's un-maximized size is kept too
+- Uses `SystemEvents.DisplaySettingsChanged` to detect monitor changes, freezes capture as soon as a change is seen, and discards any capture already in flight
+- Only restores after the monitor count actually dropped below the required number and came back; resolution or DPI changes alone do nothing
+- Restores with `SetWindowPlacement` posted asynchronously, so an unresponsive window can't stall the rest
+- Leaves minimized windows minimized (their restore position is still corrected)
+- Identifies windows by handle while they're alive, so title changes (browser tabs) don't matter; falls back to process name + title after a reboot
+- Never deletes a saved position during restore; only the startup/manual scan and window-close events prune
+- Declares per-monitor DPI awareness, so positions are in physical pixels on mixed-DPI setups
 - Only tracks/restores when required monitors are connected
+- Writes a log to `log.txt` next to the executable (rolled over at 1 MB)
 
 ## Requirements
 
