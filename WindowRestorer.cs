@@ -45,6 +45,13 @@ public class WindowRestorer
                 rekeyed = true;
             }
 
+            // Never pull a window over from another virtual desktop
+            if (!NativeMethods.IsOnCurrentDesktop(hWnd))
+            {
+                OnLog?.Invoke($"Skipping (on another desktop): {info.WindowTitle}");
+                continue;
+            }
+
             if (RestoreWindow(hWnd, info)) restored++;
         }
 

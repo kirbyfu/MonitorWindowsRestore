@@ -183,6 +183,8 @@ public class WindowTracker
         // Re-check: the display may have changed since the event that started this timer
         if (_monitorWatcher.IsFrozen || !MonitorsPresent()) return;
 
+        if (!ShouldCapture(hwnd)) return;
+
         var processName = ProcessNames.ForWindow(hwnd);
         if (processName == null) return;
 
@@ -195,6 +197,14 @@ public class WindowTracker
         _state.Set(hwnd, info);
         ScheduleSave();
     }
+
+    /// <summary>
+    /// Windows on another virtual desktop are left alone, and a minimized window keeps what
+    /// was captured before it was minimized (see <see cref="WindowInfo.Capture"/>).
+    /// </summary>
+    private bool ShouldCapture(IntPtr hwnd) =>
+        NativeMethods.IsOnCurrentDesktop(hwnd)
+        && !(NativeMethods.IsIconic(hwnd) && _state.Contains(hwnd));
 
     private void ScheduleSave()
     {
@@ -225,8 +235,7 @@ public class WindowTracker
 
     /// <summary>
     /// Full scan - used for "Track Now" and initial population. This is the only place
-    /// entries are pruned wholesale: with the required monitors present, what's on screen
-    /// right now is authoritative.
+    /// entries are pruned wholesale, and only for windows that no longer exist.
     /// </summary>
     public void TrackWindows()
     {
@@ -248,6 +257,8 @@ public class WindowTracker
             var title = NativeMethods.GetWindowTitle(hWnd);
             if (string.IsNullOrEmpty(title)) return true;
 
+            if (!ShouldCapture(hWnd)) return true;
+
             var info = WindowInfo.Capture(hWnd, processName, title);
             if (info == null) return true;
 
@@ -258,7 +269,9 @@ public class WindowTracker
 
         foreach (var (hWnd, info) in _state.Snapshot())
         {
-            if (found.Contains(hWnd)) continue;
+            // A window skipped above is usually just on another virtual desktop or minimized,
+            // so only drop the ones that are actually gone
+            if (found.Contains(hWnd) || NativeMethods.IsWindow(new IntPtr(hWnd))) continue;
             OnLog?.Invoke($"Removing closed window: {info.WindowTitle}");
             _state.Remove(hWnd);
         }

@@ -18,7 +18,8 @@ public class WindowInfo
 
     /// <summary>
     /// Reads the current placement of a window. Returns null if the window is gone.
-    /// Works for minimized windows too, since the normal rect is still meaningful.
+    /// Works for minimized windows too, but a minimized window that was snapped only
+    /// reports its pre-snap rect, so callers keep an existing capture over this one.
     /// </summary>
     public static WindowInfo? Capture(IntPtr hWnd, string processName, string title)
     {
@@ -29,6 +30,22 @@ public class WindowInfo
         bool minimized = placement.showCmd == NativeMethods.SW_SHOWMINIMIZED;
         bool maximized = placement.showCmd == NativeMethods.SW_SHOWMAXIMIZED
             || (minimized && (placement.flags & NativeMethods.WPF_RESTORETOMAXIMIZED) != 0);
+
+        // A window snapped to half a screen reports as normal, but its normal rect is where
+        // it sat before the snap - often on the other monitor. Where it really is comes from
+        // GetWindowRect, shifted from screen into workspace coordinates to match the rest.
+        if (!minimized && !maximized)
+        {
+            if (!NativeMethods.GetWindowRect(hWnd, out var actual)) return null;
+            NativeMethods.SystemParametersInfo(NativeMethods.SPI_GETWORKAREA, 0, out var workArea, 0);
+            rect = new NativeMethods.RECT
+            {
+                Left = actual.Left - workArea.Left,
+                Top = actual.Top - workArea.Top,
+                Right = actual.Right - workArea.Left,
+                Bottom = actual.Bottom - workArea.Top
+            };
+        }
 
         return new WindowInfo
         {

@@ -61,6 +61,19 @@ public static class NativeMethods
     public static extern bool SetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT lpwndpl);
 
     [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromWindow(IntPtr hWnd, uint dwFlags);
+
+    public const uint MONITOR_DEFAULTTONULL = 0;
+
+    [DllImport("user32.dll")]
+    public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, out RECT pvParam, uint fWinIni);
+
+    public const uint SPI_GETWORKAREA = 0x0030;
+
+    [DllImport("user32.dll")]
     public static extern int GetSystemMetrics(int nIndex);
 
     public const int SM_CMONITORS = 80;
@@ -157,5 +170,19 @@ public static class NativeMethods
 
         // Must have a title
         return GetWindowTextLength(hWnd) > 0;
+    }
+
+    /// <summary>
+    /// False for windows that belong to another virtual desktop. Dexpot hides most of those
+    /// outright, but parks some (Explorer windows, for one) still visible and shrunk, tens of
+    /// thousands of pixels off every monitor. Those must never be captured or restored: doing
+    /// either drags them onto the current desktop behind Dexpot's back. A minimized window
+    /// sits at -32000 and is off every monitor too, but that's ordinary and it stays in play.
+    /// </summary>
+    public static bool IsOnCurrentDesktop(IntPtr hWnd)
+    {
+        if (!IsWindowVisible(hWnd)) return false;
+        if (IsIconic(hWnd)) return true;
+        return MonitorFromWindow(hWnd, MONITOR_DEFAULTTONULL) != IntPtr.Zero;
     }
 }
